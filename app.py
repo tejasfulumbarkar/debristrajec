@@ -12,7 +12,7 @@ import tempfile
 def load_css(file_name:str)->str:
     with open(file_name) as f:
         st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-yolo_model = YOLO('best3.pt')
+yolo_model = YOLO('best.pt')
 
 # Load Random Forest Classifier
 rf_classifier = joblib.load('random_forest_model.pkl')
