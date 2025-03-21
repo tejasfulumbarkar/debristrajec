@@ -1,0 +1,16 @@
+Removal Order:
+1: ID 15, t_closest: 0.00, d: 136.2
+2: ID 30, t_closest: 0.00, d: 197.6
+3: ID 36, t_closest: 0.00, d: 283.4
+4: ID 42, t_closest: 0.00, d: 115.4
+5: ID 43, t_closest: 0.00, d: 188.1
+6: ID 46, t_closest: 0.00, d: 256.2
+7: ID 47, t_closest: 0.00, d: 288.4
+8: ID 48, t_closest: 0.00, d: 283.5
+9: ID 2, t_closest: 3.22, d: 168.0
+10: ID 41, t_closest: 5.26, d: 76.6
+11: ID 39, t_closest: 24.93, d: 269.2
+12: ID 37, t_closest: 38.95, d: 274.9
+13: ID 7, t_closest: 54.02, d: 165.2
+14: ID 44, t_closest: 62.47, d: 324.9
+15: ID 45, t_closest: 106.61, d: 93.1
