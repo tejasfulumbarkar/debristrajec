@@ -286,7 +286,7 @@ st.markdown("""
             background: linear-gradient(120deg, #E2A3FF, #A682FF);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;'>
-            🔍 Detecting and Classifying Space Debris with AI 🚀
+            🔍 Detecting and Classifying Space Debris 
         </h1>
         <p style='font-size: 1.2rem; color: #B4A5FF; margin-bottom: 2rem;'>
             🌍 Using AI to detect, classify, and track space debris for a cleaner orbit ✨
@@ -874,7 +874,13 @@ if uploaded_file is not None:
                     # Display the video using video bytes
                     if video_results['video_bytes']:
                         try:
-                            st.video(video_results['video_bytes'], format='video/mp4')
+                            # Create a temporary file for the video
+                            temp_video = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                            temp_video.write(video_results['video_bytes'])
+                            temp_video.close()
+                            
+                            # Display the video using the temporary file
+                            st.video(temp_video.name)
                         except Exception as e:
                             st.error(f"Error displaying video: {str(e)}")
                     else:
