@@ -679,9 +679,6 @@ def process_video(video_path):
     if not os.path.exists('temp_videos'):
         os.makedirs('temp_videos')
     
-    # Create output paths
-    output_path = os.path.join('temp_videos', 'output.mp4')
-    
     # Initialize progress bar and status text
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -689,7 +686,7 @@ def process_video(video_path):
     # Store frames in memory
     frames = []
     frame_count = 0
-    total_detections = 0  # Rename for clarity
+    total_detections = 0
     detection_details = []
     
     # Define colors for different confidence levels
@@ -699,8 +696,8 @@ def process_video(video_path):
     COLOR_VERY_LOW = (128, 0, 255) # Purple for very low confidence
     
     # Set YOLO model parameters for higher sensitivity
-    yolo_model.conf = 0.05  # Even lower confidence threshold
-    yolo_model.iou = 0.2   # Lower IOU threshold for better detection of close objects
+    yolo_model.conf = 0.05
+    yolo_model.iou = 0.2
     
     while cap.isOpened():
         ret, frame = cap.read()
@@ -796,12 +793,13 @@ def process_video(video_path):
         status_text.markdown(f"<p style='color: white; margin: 0; padding: 0;'>Processing frame {frame_count}/{total_frames}</p>", unsafe_allow_html=True)
     
     # Calculate estimated unique debris
-    unique_debris = len(set(det['frame'] for det in detection_details))  # Count frames with detections
+    unique_debris = len(set(det['frame'] for det in detection_details))
     
     # Release the capture
     cap.release()
     
-    # Save frames as video using cv2.VideoWriter
+    # Save frames as video and get video bytes
+    video_bytes = None
     if frames:
         # Try different codecs
         codecs = [
@@ -826,14 +824,16 @@ def process_video(video_path):
                 
                 # Check if the file was created and is not empty
                 if os.path.exists(temp_output) and os.path.getsize(temp_output) > 0:
-                    output_path = temp_output
+                    # Read the video file into memory
+                    with open(temp_output, 'rb') as video_file:
+                        video_bytes = video_file.read()
                     break
             except Exception as e:
                 continue
     
-    # Return video properties along with output path and debris count
+    # Return video properties along with video bytes and debris count
     return {
-        'output_path': output_path,
+        'video_bytes': video_bytes,
         'debris_count': unique_debris,
         'total_detections': total_detections,
         'total_frames': total_frames,
@@ -871,25 +871,14 @@ if uploaded_file is not None:
                     else:
                         st.warning("No debris detected in the video.")
                     
-                    # Try different methods to display the video
-                    try:
-                        # Method 1: Direct file path
-                        st.video(video_results['output_path'])
-                    except Exception as e1:
+                    # Display the video using video bytes
+                    if video_results['video_bytes']:
                         try:
-                            # Method 2: Read as bytes
-                            with open(video_results['output_path'], 'rb') as video_file:
-                                video_bytes = video_file.read()
-                                st.video(video_bytes)
-                        except Exception as e2:
-                            try:
-                                # Method 3: Read as bytes with explicit format
-                                with open(video_results['output_path'], 'rb') as video_file:
-                                    video_bytes = video_file.read()
-                                    st.video(video_bytes, format='video/mp4')
-                            except Exception as e3:
-                                st.error("Unable to display the video. Please try a different video file.")
-                                st.error(f"Error details: {str(e3)}")
+                            st.video(video_results['video_bytes'], format='video/mp4')
+                        except Exception as e:
+                            st.error(f"Error displaying video: {str(e)}")
+                    else:
+                        st.error("Failed to generate video output.")
                     
                     # Display statistics
                     st.markdown(
