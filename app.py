@@ -8,11 +8,12 @@ import time
 from PIL import Image
 import tempfile
 
-# Load YOLO model
+# Load YOLO models
 def load_css(file_name:str)->str:
     with open(file_name) as f:
         st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-yolo_model = YOLO('best.pt')
+yolo_model_video = YOLO('best.pt')  # Model for video processing
+yolo_model_image = YOLO('best3.pt')  # Model for image processing
 
 # Load Random Forest Classifier
 rf_classifier = joblib.load('random_forest_model.pkl')
@@ -596,8 +597,9 @@ def process_image(image_path):
     image = cv2.imread(image_path)
     original_image = image.copy()
     
-    # Process with YOLO
-    results = yolo_model(image)
+    # Process with both YOLO models
+    results_video = yolo_model_video(image)
+    results_image = yolo_model_image(image)
     
     detections = []
     all_detections = []  # Store all detections regardless of confidence
@@ -609,61 +611,133 @@ def process_image(image_path):
         9: 'Person'
     }
     
-    # Draw detections on image
-    for result in results:
+    # Combine detections from both models
+    combined_detections = []
+    
+    # Process detections from video model
+    for result in results_video:
         boxes = result.boxes
         for box in boxes:
-            # Get box coordinates and confidence
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
             conf = float(box.conf[0])
             cls = int(box.cls[0])
             
-            # Get class name
-            class_name = class_names.get(cls, f'Class {cls}')
+            if cls in [0, 1]:  # Check for both debris classes
+                combined_detections.append({
+                    'model': 'video',
+                    'confidence': conf,
+                    'class': cls,
+                    'position': (int(x1), int(y1), int(x2), int(y2))
+                })
+    
+    # Process detections from image model
+    for result in results_image:
+        boxes = result.boxes
+        for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            conf = float(box.conf[0])
+            cls = int(box.cls[0])
             
-            # Store all detections for debugging
-            width = int(x2 - x1)
-            height = int(y2 - y1)
-            size = calculate_debris_size(width, height)
+            if cls in [0, 1]:  # Check for both debris classes
+                combined_detections.append({
+                    'model': 'image',
+                    'confidence': conf,
+                    'class': cls,
+                    'position': (int(x1), int(y1), int(x2), int(y2))
+                })
+    
+    # Merge overlapping detections
+    merged_detections = []
+    used_indices = set()
+    
+    for i, det1 in enumerate(combined_detections):
+        if i in used_indices:
+            continue
             
-            all_detections.append({
-                'confidence': conf,
-                'class': cls,
-                'class_name': class_name,
-                'size': size,
-                'position': (int(x1), int(y1), int(x2), int(y2))
+        x1, y1, x2, y2 = det1['position']
+        area1 = (x2 - x1) * (y2 - y1)
+        overlapping_dets = []
+        
+        for j, det2 in enumerate(combined_detections[i+1:], i+1):
+            if j in used_indices:
+                continue
+                
+            x1_2, y1_2, x2_2, y2_2 = det2['position']
+            area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+            
+            # Calculate intersection
+            x_left = max(x1, x1_2)
+            y_top = max(y1, y1_2)
+            x_right = min(x2, x2_2)
+            y_bottom = min(y2, y2_2)
+            
+            if x_right > x_left and y_bottom > y_top:
+                intersection = (x_right - x_left) * (y_bottom - y_top)
+                iou = intersection / float(area1 + area2 - intersection)
+                
+                if iou > 0.3:  # If overlap is significant
+                    overlapping_dets.append((j, det2))
+        
+        if overlapping_dets:
+            # Merge overlapping detections
+            all_dets = [det1] + [det[1] for det in overlapping_dets]
+            # Use the highest confidence detection
+            best_det = max(all_dets, key=lambda x: x['confidence'])
+            
+            # Calculate weighted average position
+            total_conf = sum(det['confidence'] for det in all_dets)
+            x1_avg = sum(det['position'][0] * det['confidence'] for det in all_dets) / total_conf
+            y1_avg = sum(det['position'][1] * det['confidence'] for det in all_dets) / total_conf
+            x2_avg = sum(det['position'][2] * det['confidence'] for det in all_dets) / total_conf
+            y2_avg = sum(det['position'][3] * det['confidence'] for det in all_dets) / total_conf
+            
+            merged_detections.append({
+                'confidence': best_det['confidence'],
+                'class': best_det['class'],
+                'position': (int(x1_avg), int(y1_avg), int(x2_avg), int(y2_avg))
             })
             
-            # Process debris detections (both class 0 and 1)
-            if cls in [0, 1]:  # Check for both debris classes
-                # Color coding based on confidence:
-                # Green: conf > 0.5
-                # Yellow: 0.3 < conf <= 0.5
-                # Orange: 0.2 < conf <= 0.3
-                if conf > 0.5:
-                    color = (0, 255, 0)  # Green for high confidence
-                elif conf > 0.3:
-                    color = (0, 255, 255)  # Yellow for medium confidence
-                else:
-                    color = (0, 165, 255)  # Orange for low confidence
-                
-                cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-                label = f"Debris {conf:.2f} ({size})"
-                cv2.putText(image, label, (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                
-                # Store all debris detections with confidence > 0.2
-                if conf > 0.2:  # Lowered threshold to catch fainter debris
-                    detections.append({
-                        'confidence': conf,
-                        'size': size,
-                        'position': (int(x1), int(y1), int(x2), int(y2))
-                    })
+            used_indices.add(i)
+            used_indices.update(det[0] for det in overlapping_dets)
+        else:
+            merged_detections.append(det1)
+            used_indices.add(i)
+    
+    # Draw merged detections on image
+    for det in merged_detections:
+        x1, y1, x2, y2 = det['position']
+        conf = det['confidence']
+        cls = det['class']
+        
+        # Calculate size
+        width = int(x2 - x1)
+        height = int(y2 - y1)
+        size = calculate_debris_size(width, height)
+        
+        # Color coding based on confidence
+        if conf > 0.5:
+            color = (0, 255, 0)  # Green for high confidence
+        elif conf > 0.3:
+            color = (0, 255, 255)  # Yellow for medium confidence
+        else:
+            color = (0, 165, 255)  # Orange for low confidence
+        
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+        label = f"Debris {conf:.2f} ({size})"
+        cv2.putText(image, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        if conf > 0.2:  # Lowered threshold to catch fainter debris
+            detections.append({
+                'confidence': conf,
+                'size': size,
+                'position': (x1, y1, x2, y2)
+            })
     
     # Save both original and processed images
     cv2.imwrite("original_image.jpg", original_image)
     cv2.imwrite("processed_image.jpg", image)
     
-    return detections, all_detections
+    return detections, merged_detections
 
 def process_video(video_path):
     # Open the video file
@@ -696,8 +770,10 @@ def process_video(video_path):
     COLOR_VERY_LOW = (128, 0, 255) # Purple for very low confidence
     
     # Set YOLO model parameters for higher sensitivity
-    yolo_model.conf = 0.05
-    yolo_model.iou = 0.2
+    yolo_model_video.conf = 0.05
+    yolo_model_video.iou = 0.2
+    yolo_model_image.conf = 0.05
+    yolo_model_image.iou = 0.2
     
     while cap.isOpened():
         ret, frame = cap.read()
@@ -716,72 +792,159 @@ def process_video(video_path):
         # Add black background for better text visibility
         frame_with_legend = np.vstack([legend, frame])
             
-        # Process frame with YOLO with higher sensitivity
-        results = yolo_model(frame, conf=0.05, iou=0.2)
+        # Process frame with both YOLO models
+        results_video = yolo_model_video(frame, conf=0.05, iou=0.2)
+        results_image = yolo_model_image(frame, conf=0.05, iou=0.2)
         
-        # Track detections in current frame
-        frame_detections = 0
+        # Combine detections from both models
+        combined_detections = []
         
-        # Draw detections on frame
-        for result in results:
+        # Process detections from video model
+        for result in results_video:
             boxes = result.boxes
             for box in boxes:
-                # Get box coordinates and confidence
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                 conf = float(box.conf[0])
                 cls = int(box.cls[0])
                 
-                # Process debris detections (both class 0 and 1)
                 if cls in [0, 1]:  # Check for both debris classes
-                    frame_detections += 1
-                    total_detections += 1
-                    
-                    # Color coding based on confidence
-                    if conf > 0.5:
-                        color = COLOR_HIGH
-                        conf_text = "High"
-                    elif conf > 0.3:
-                        color = COLOR_MEDIUM
-                        conf_text = "Medium"
-                    elif conf > 0.2:
-                        color = COLOR_LOW
-                        conf_text = "Low"
-                    else:
-                        color = COLOR_VERY_LOW
-                        conf_text = "Very Low"
-                    
-                    # Calculate size
-                    width_box = int(x2 - x1)
-                    height_box = int(y2 - y1)
-                    size = calculate_debris_size(width_box, height_box)
-                    
-                    # Draw thicker rectangle
-                    cv2.rectangle(frame_with_legend, 
-                                (int(x1), int(y1) + legend_height), 
-                                (int(x2), int(y2) + legend_height), 
-                                color, 3)
-                    
-                    # Add black background for text
-                    label = f"Debris ({conf_text}, {size})"
-                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                    cv2.rectangle(frame_with_legend, 
-                                (int(x1), int(y1) - 25 + legend_height),
-                                (int(x1) + label_w, int(y1) + legend_height),
-                                (0, 0, 0), -1)
-                    
-                    # Draw text with better visibility
-                    cv2.putText(frame_with_legend, label,
-                              (int(x1), int(y1) - 5 + legend_height),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                    
-                    # Store detection details
-                    detection_details.append({
-                        'frame': frame_count,
+                    combined_detections.append({
+                        'model': 'video',
                         'confidence': conf,
-                        'confidence_level': conf_text,
-                        'size': size,
+                        'class': cls,
                         'position': (int(x1), int(y1), int(x2), int(y2))
                     })
+        
+        # Process detections from image model
+        for result in results_image:
+            boxes = result.boxes
+            for box in boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                conf = float(box.conf[0])
+                cls = int(box.cls[0])
+                
+                if cls in [0, 1]:  # Check for both debris classes
+                    combined_detections.append({
+                        'model': 'image',
+                        'confidence': conf,
+                        'class': cls,
+                        'position': (int(x1), int(y1), int(x2), int(y2))
+                    })
+        
+        # Merge overlapping detections
+        merged_detections = []
+        used_indices = set()
+        
+        for i, det1 in enumerate(combined_detections):
+            if i in used_indices:
+                continue
+                
+            x1, y1, x2, y2 = det1['position']
+            area1 = (x2 - x1) * (y2 - y1)
+            overlapping_dets = []
+            
+            for j, det2 in enumerate(combined_detections[i+1:], i+1):
+                if j in used_indices:
+                    continue
+                    
+                x1_2, y1_2, x2_2, y2_2 = det2['position']
+                area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+                
+                # Calculate intersection
+                x_left = max(x1, x1_2)
+                y_top = max(y1, y1_2)
+                x_right = min(x2, x2_2)
+                y_bottom = min(y2, y2_2)
+                
+                if x_right > x_left and y_bottom > y_top:
+                    intersection = (x_right - x_left) * (y_bottom - y_top)
+                    iou = intersection / float(area1 + area2 - intersection)
+                    
+                    if iou > 0.3:  # If overlap is significant
+                        overlapping_dets.append((j, det2))
+            
+            if overlapping_dets:
+                # Merge overlapping detections
+                all_dets = [det1] + [det[1] for det in overlapping_dets]
+                # Use the highest confidence detection
+                best_det = max(all_dets, key=lambda x: x['confidence'])
+                
+                # Calculate weighted average position
+                total_conf = sum(det['confidence'] for det in all_dets)
+                x1_avg = sum(det['position'][0] * det['confidence'] for det in all_dets) / total_conf
+                y1_avg = sum(det['position'][1] * det['confidence'] for det in all_dets) / total_conf
+                x2_avg = sum(det['position'][2] * det['confidence'] for det in all_dets) / total_conf
+                y2_avg = sum(det['position'][3] * det['confidence'] for det in all_dets) / total_conf
+                
+                merged_detections.append({
+                    'confidence': best_det['confidence'],
+                    'class': best_det['class'],
+                    'position': (int(x1_avg), int(y1_avg), int(x2_avg), int(y2_avg))
+                })
+                
+                used_indices.add(i)
+                used_indices.update(det[0] for det in overlapping_dets)
+            else:
+                merged_detections.append(det1)
+                used_indices.add(i)
+        
+        # Draw merged detections on frame
+        frame_detections = 0
+        for det in merged_detections:
+            x1, y1, x2, y2 = det['position']
+            conf = det['confidence']
+            cls = det['class']
+            
+            if cls in [0, 1]:  # Check for both debris classes
+                frame_detections += 1
+                total_detections += 1
+                
+                # Color coding based on confidence
+                if conf > 0.5:
+                    color = COLOR_HIGH
+                    conf_text = "High"
+                elif conf > 0.3:
+                    color = COLOR_MEDIUM
+                    conf_text = "Medium"
+                elif conf > 0.2:
+                    color = COLOR_LOW
+                    conf_text = "Low"
+                else:
+                    color = COLOR_VERY_LOW
+                    conf_text = "Very Low"
+                
+                # Calculate size
+                width_box = int(x2 - x1)
+                height_box = int(y2 - y1)
+                size = calculate_debris_size(width_box, height_box)
+                
+                # Draw thicker rectangle
+                cv2.rectangle(frame_with_legend, 
+                            (x1, y1 + legend_height), 
+                            (x2, y2 + legend_height), 
+                            color, 3)
+                
+                # Add black background for text
+                label = f"Debris ({conf_text}, {size})"
+                (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(frame_with_legend, 
+                            (x1, y1 - 25 + legend_height),
+                            (x1 + label_w, y1 + legend_height),
+                            (0, 0, 0), -1)
+                
+                # Draw text with better visibility
+                cv2.putText(frame_with_legend, label,
+                          (x1, y1 - 5 + legend_height),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                
+                # Store detection details
+                detection_details.append({
+                    'frame': frame_count,
+                    'confidence': conf,
+                    'confidence_level': conf_text,
+                    'size': size,
+                    'position': (x1, y1, x2, y2)
+                })
         
         # Store the processed frame
         frames.append(frame_with_legend)
@@ -901,6 +1064,77 @@ if uploaded_file is not None:
                         """,
                         unsafe_allow_html=True
                     )
+                    
+                    # Add Frame-by-Frame Detection Timeline
+                    st.markdown("<h3 style='color: #E2A3FF; margin: 2rem 0;'>🎬 Frame-by-Frame Detection Timeline</h3>", unsafe_allow_html=True)
+                    
+                    # Group detections by frame
+                    frame_detections = {}
+                    for det in video_results['detection_details']:
+                        frame_num = det['frame']
+                        if frame_num not in frame_detections:
+                            frame_detections[frame_num] = []
+                        frame_detections[frame_num].append(det)
+                    
+                    # Create frame timeline with expandable details
+                    for frame_num in sorted(frame_detections.keys()):
+                        with st.expander(f"Frame {frame_num} - {len(frame_detections[frame_num])} Debris Objects"):
+                            # Create a grid for debris objects in this frame
+                            cols = st.columns(3)
+                            for idx, det in enumerate(frame_detections[frame_num]):
+                                col = cols[idx % 3]
+                                with col:
+                                    confidence_color = {
+                                        "High": "#56FF88",
+                                        "Medium": "#FFAA56",
+                                        "Low": "#FF5656",
+                                        "Very Low": "#9C9C9C"
+                                    }[det['confidence_level']]
+                                    
+                                    st.markdown(
+                                        f"""
+                                        <div style='background: rgba(30, 19, 50, 0.7); padding: 1rem; border-radius: 0.5rem; margin: 0.5rem 0; border-left: 4px solid {confidence_color};'>
+                                            <p style='margin: 0.2rem 0;'>🎯 Confidence: <span style='color: {confidence_color};'>{det['confidence']:.2f}</span></p>
+                                            <p style='margin: 0.2rem 0;'>📏 Size: {det['size']}</p>
+                                            <p style='margin: 0.2rem 0;'>🎚️ Level: {det['confidence_level']}</p>
+                                            <p style='margin: 0.2rem 0;'>📍 Position: ({det['position'][0]}, {det['position'][1]})</p>
+                                        </div>
+                                        """,
+                                        unsafe_allow_html=True
+                                    )
+                    
+                    # Add Frame Distribution Visualization
+                    st.markdown("<h3 style='color: #E2A3FF; margin: 2rem 0;'>📊 Debris Detection Distribution</h3>", unsafe_allow_html=True)
+                    
+                    # Create frame ranges for better visualization
+                    frame_range = 10  # Group frames in ranges of 10
+                    frame_ranges = {}
+                    for frame_num in frame_detections.keys():
+                        range_start = (frame_num // frame_range) * frame_range
+                        range_end = range_start + frame_range - 1
+                        range_key = f"{range_start}-{range_end}"
+                        if range_key not in frame_ranges:
+                            frame_ranges[range_key] = 0
+                        frame_ranges[range_key] += len(frame_detections[frame_num])
+                    
+                    # Display distribution bar chart
+                    max_detections = max(frame_ranges.values())
+                    for range_key, count in frame_ranges.items():
+                        percentage = (count / max_detections) * 100
+                        st.markdown(
+                            f"""
+                            <div style='margin: 0.5rem 0;'>
+                                <div style='display: flex; align-items: center; gap: 1rem;'>
+                                    <div style='width: 100px; white-space: nowrap;'>Frames {range_key}</div>
+                                    <div style='flex-grow: 1; background: rgba(166, 130, 255, 0.2); border-radius: 4px; height: 24px;'>
+                                        <div style='width: {percentage}%; height: 100%; background: linear-gradient(90deg, #E2A3FF, #A682FF); border-radius: 4px;'></div>
+                                    </div>
+                                    <div style='width: 50px; text-align: right;'>{count}</div>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
                     
                 except Exception as e:
                     st.error(f"Error processing video: {str(e)}")
